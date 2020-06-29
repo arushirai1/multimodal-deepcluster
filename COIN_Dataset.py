@@ -11,13 +11,13 @@ from Utils import build_paths, get_keys, create_frames
 class COIN(Dataset):
     """
     Args:
-        class_idxs (string): Path to list of class names and corresponding label (.txt)
-        split (string): Path to train or test split (.txt)
-        frames_root (string): Directory (root) of directories (classes) of directories (vid_id) of frames.
+        root (string): Path to video directory
+        dictionary_pickle (string): Path to train or test split (.pickle)
+        metadata_path (string):Path to csv file.
 
         clip_len (int): Number of frames per sample, i.e. depth of Model input.
         train (bool): Training vs. Testing model. Default is True
-        transform (callable, optional): Optional transform to be applied on a sample.
+        do_crop (bool): Crop or not, no cropping keeps width size at 224. Default True
     """
 
     def __init__(self, root, dictionary_pickle, metadata_path, train, clip_len=16, do_crop=True):
