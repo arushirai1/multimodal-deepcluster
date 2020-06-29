@@ -17,8 +17,6 @@ def load_model(path):
     if os.path.isfile(path):
         print("=> loading checkpoint '{}'".format(path))
         checkpoint = torch.load(path)
-        # size of the top layer
-        N = checkpoint['state_dict']['logits.conv3d.bias'].size()
         # deal with a dataparallel table
         def rename_key(key):
             if not 'module' in key:
@@ -29,6 +27,8 @@ def load_model(path):
                                     for key, val
                                     in checkpoint['state_dict'].items()}
         print(checkpoint['prec5'])
+        # size of the top layer
+        N = checkpoint['state_dict']['logits.conv3d.bias'].size()
         # build skeleton of the model
         sob = 'sobel.0.weight' in checkpoint['state_dict'].keys()
         model = models.__dict__['i3d'](sobel=sob, out=int(N[0]))
