@@ -14,6 +14,7 @@ from scipy.sparse import csr_matrix, find
 import torch
 import torch.utils.data as data
 import torchvision.transforms as transforms
+from sklearn.metrics.cluster import homogeneity_score
 
 ImageFile.LOAD_TRUNCATED_IMAGES = True
 
@@ -44,16 +45,27 @@ class ReassignedDataset(data.Dataset):
     """
 
     def __init__(self, image_indexes, pseudolabels, dataset, transform=None):
+        self.dataset = dataset
         self.imgs = self.make_dataset(image_indexes, pseudolabels, dataset)
         self.transform = transform
 
     def make_dataset(self, image_indexes, pseudolabels, dataset):
+        print("Making dataset")
+        end = time.time()
+
         label_to_idx = {label: idx for idx, label in enumerate(set(pseudolabels))}
         images = []
+        true_labels=[]
         for j, idx in enumerate(image_indexes):
-            path = dataset[idx][0]
+            #path = dataset[idx][0]
+            original_index= idx
+            original_label = dataset.data_list[idx][1]
+            true_labels.append(original_label)
             pseudolabel = label_to_idx[pseudolabels[j]]
-            images.append((path, pseudolabel))
+            images.append((original_index, original_label, pseudolabel))
+
+        print("Making dataset took: ", time.time()-end)
+        print("Homogeneity Score: ", homogeneity_score(np.array(true_labels), np.array(pseudolabels)))
         return images
 
     def __getitem__(self, index):
@@ -63,13 +75,13 @@ class ReassignedDataset(data.Dataset):
         Returns:
             tuple: (image, pseudolabel) where pseudolabel is the cluster of index datapoint
         """
-        img, pseudolabel = self.imgs[index]
+        original_index, original_label, pseudolabel = self.imgs[index]
         '''
         img = transforms.ToPILImage()(img).convert("RGB") #pil_loader(path)
         if self.transform is not None:
             img = self.transform(img)
         '''
-        return img, pseudolabel
+        return self.dataset[original_index][0], pseudolabel
 
     def __len__(self):
         return len(self.imgs)
