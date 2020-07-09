@@ -86,22 +86,42 @@ def rand(count, start, end, spacing):
     return l
 
 #continuous
+def uniform_sample_frames(n_frames, n_frames_per_segment, n_frames_per_video=None):
+    """
+    Extracts 64 segments from frames (either text or video frames).
+    From https://github.com/noureldien/videograph
+    """
+    if n_frames_per_video is None:
+        n_frames_per_video = n_frames_per_video
+    n_segments = int(n_frames_per_video / n_frames_per_segment)
+
+    if n_frames < n_frames_per_video:
+        step = (n_frames - n_frames_per_segment) / float(n_segments)
+        idces_start = np.arange(0, n_frames - n_frames_per_segment, step=step, dtype=np.int)
+        idx = []
+        for idx_start in idces_start:
+            idx += np.arange(idx_start, idx_start + n_frames_per_segment, dtype=np.int).tolist()
+    elif n_frames == n_frames_per_video:
+        idx = np.arange(n_frames_per_video)
+    else:
+        step = n_frames / float(n_segments)
+        idces_start = np.arange(0, n_frames, step=step, dtype=np.int)
+        idx = []
+        for idx_start in idces_start:
+            idx += np.arange(idx_start, idx_start + n_frames_per_segment, dtype=np.int).tolist()
+    return idx
+
 def create_frames(video_file, desired_frames=64, skip_rate=2, continuous_frames=8):
     if not os.path.exists(video_file):
         print("DNE", video_file)
         return None
     cap = cv2.VideoCapture(video_file)
     length = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-    #i = random.randrange(0, length, desired_frames*skip_rate)
-    end = length - desired_frames*skip_rate - 1
-    if end <= 0:
-        i=0
-        skip_rate=1
-    else:
-        i = random.randint(0, end)
+    idx=uniform_sample_frames(length, n_frames_per_segment=8, n_frames_per_video=64*8)
+
     frames = []
-    for j in range(0,desired_frames):
-        cap.set(cv2.CAP_PROP_POS_FRAMES, i+skip_rate*j)
+    for i in idx:
+        cap.set(cv2.CAP_PROP_POS_FRAMES, i)
         success, frame = cap.read()
         if success and (frame is not None and frame.size != 0):
             frame=np.nan_to_num(frame, 0, posinf=255, neginf=0)
@@ -112,10 +132,13 @@ def create_frames(video_file, desired_frames=64, skip_rate=2, continuous_frames=
             frames.append(frame)
         else:
             if len(frames) is not 0:
+                print("video file err", video_file)
                 frames.append(frames[-1])
+    '''
     while len(frames) != desired_frames:
         frames.append(frames[-1])
         print("video file err", video_file)
+    '''
     frames=np.array(frames).astype(np.float32)
     return frames
 '''

@@ -82,7 +82,7 @@ class ReassignedDataset(data.Dataset):
             img = self.transform(img)
         '''
         tmp = self.dataset[original_index]
-        return tmp[0], pseudolabel, tmp[1]
+        return tmp[0], pseudolabel, tmp[2]
 
     def __len__(self):
         return len(self.imgs)

@@ -69,14 +69,14 @@ class COIN(Dataset):
 
     def __getitem__(self, index):
         vid_dir, label, frame_count, class_name = self.data_list[index]
-        buffer=None
+        buffer = 0 #np.empty((self.clip_len, self.resize_height, self.resize_width, 3), np.dtype('float32'))
         if 'text_only' is not self.method:
             buffer = self.load_frames(vid_dir, frame_count)
             if self.do_crop:
                 buffer = self.spatial_crop(buffer, self.crop_size)
             buffer = self.normalize(buffer)
             buffer = self.to_tensor(buffer)
-        key=vid_dir.split('/')[-1]
+        key=(vid_dir.split('/')[-1]).split('.')[0]
         text = get_text_description(self.dictionary_pickle, key)
         return buffer, label, text
 

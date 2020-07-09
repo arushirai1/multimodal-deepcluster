@@ -25,12 +25,13 @@ class RobertaCaptions(nn.Module):
         self._initialize_weights()
 
     def forward(self, x):
-        tokens = self.roberta.encode(x)
-        x = self.roberta.extract_features(tokens)
-        pool= nn.AdaptiveAvgPool2d((1,1024)) #nn.MaxPool2d((x.shape[1], 1))
-        x=pool(x).squeeze(1)
+        x = self.extract_features(x)
+        print(x.shape)
         x=self.classifier(x)
-        return self.top_layer(x) #self.pool(x.permute(0, 2, 1))  # .cuda()).detach().cpu()
+        print(x.shape)
+        x = self.top_layer(x)
+        print(x.shape)
+        return x #self.pool(x.permute(0, 2, 1))  # .cuda()).detach().cpu()
 
     def extract_features(self, x):
         tokens = self.roberta.encode(x)
@@ -38,6 +39,8 @@ class RobertaCaptions(nn.Module):
         pool= nn.AdaptiveAvgPool2d((1,1024)) #nn.MaxPool2d((x.shape[1], 1))
         x=pool(x).squeeze(1)
         return x
+    def encode(self, x):
+        return self.roberta.encode(x)
 
     def _initialize_weights(self):
         self.classifier[0].weight.data.normal_(0, 0.01)
