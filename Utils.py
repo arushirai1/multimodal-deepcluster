@@ -2,7 +2,6 @@ import os, sys
 import numpy as np
 import cv2
 import errno
-import h5py
 import pandas as pd
 import pickle
 def build_paths(print_paths=True):
@@ -16,6 +15,21 @@ def build_paths(print_paths=True):
               '\nMetadata Path: %s' % str(metadata_path))
 
     return root, dictionary_pickle, metadata_path
+def grab_frames_by_time(video_file='cPEFskCrdhQ', start=22.49, end=30.44, cliplen=16):
+    if not os.path.exists(video_file + '.mp4'):
+        print("DNE", video_file)
+    cap = cv2.VideoCapture("%s.mp4" % (video_file))
+    FPS = int(cap.get(cv2.CAP_PROP_FPS))
+
+    frames = []
+    # step=max(length//desired_frames,2)
+    for i in np.linspace(FPS * start, FPS * end, num=cliplen, dtype=int):
+        cap.set(cv2.CAP_PROP_POS_FRAMES, i)
+        success, frame = cap.read()
+        if (frame is not None and frame.size != 0):
+            frames.append(frame)
+    frames = np.array(frames).astype(np.float32)
+    return frames
 
 def _balance_targets(metadata_path):
     df = pd.read_csv(metadata_path)
@@ -52,6 +66,11 @@ def get_keys(path_to, dictionary_path, metadata_path):
     print("Test Length", len(test_list))
 
     return clip_list, test_list, classes
+
+def get_text_description(dictionary_path, key):
+    with open(dictionary_path, 'rb') as f:
+        captions_df = pickle.load(f)
+        return ' '.join(list(captions_df[key]['text']))
 
 import random
 def rand(count, start, end, spacing):
@@ -138,17 +157,6 @@ def create_frames(video_file, desired_frames=64):
     frames=np.array(frames).astype(np.float32)
     return frames
 '''
-def h5_dump(dataset_name, data, h5_file):
-    with h5py.File(h5_file, 'a') as hf:
-        hf.create_dataset(dataset_name, data=data)
-        print("Successfully created: ", dataset_name)
-
-def h5_load(dataset_name, h5_file):
-    frames=None
-    with h5py.File(h5_file, 'r') as hf:
-        frames=hf[dataset_name][:]
-    return frames
-
 # Computes Mean and Std Dev, across RGB channels, of all training images in a Dataset & returns averages
 # Set Pytorch Transforms to None for this function
 def calc_mean_and_std(dataset):

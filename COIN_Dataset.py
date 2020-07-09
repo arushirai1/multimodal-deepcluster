@@ -5,7 +5,7 @@ from torch.utils.data import Dataset, DataLoader
 import torch
 from torchvision import transforms
 
-from Utils import build_paths, get_keys, create_frames
+from Utils import build_paths, get_keys, create_frames, get_text_description
 
 
 class COIN(Dataset):
@@ -15,14 +15,16 @@ class COIN(Dataset):
         dictionary_pickle (string): Path to train or test split (.pickle)
         metadata_path (string):Path to csv file.
 
+        method (string): ['text_only', 'joint', 'video_only']
         clip_len (int): Number of frames per sample, i.e. depth of Model input.
         train (bool): Training vs. Testing model. Default is True
         do_crop (bool): Crop or not, no cropping keeps width size at 224. Default True
     """
 
-    def __init__(self, root, dictionary_pickle, metadata_path, train, clip_len=16, do_crop=True):
+    def __init__(self, root, dictionary_pickle, metadata_path, train, clip_len=16, method='text_only', do_crop=True):
 
         self.root = root
+        self.method = method
         self.dictionary_pickle = dictionary_pickle
         self.metadata_path = metadata_path
         self.train = train
@@ -67,13 +69,16 @@ class COIN(Dataset):
 
     def __getitem__(self, index):
         vid_dir, label, frame_count, class_name = self.data_list[index]
-        buffer = self.load_frames(vid_dir, frame_count)
-        if self.do_crop:
-            buffer = self.spatial_crop(buffer, self.crop_size)
-        buffer = self.normalize(buffer)
-        buffer = self.to_tensor(buffer)
-
-        return buffer, label
+        buffer=None
+        if 'text_only' is not self.method:
+            buffer = self.load_frames(vid_dir, frame_count)
+            if self.do_crop:
+                buffer = self.spatial_crop(buffer, self.crop_size)
+            buffer = self.normalize(buffer)
+            buffer = self.to_tensor(buffer)
+        key=vid_dir.split('/')[-1]
+        text = get_text_description(self.dictionary_pickle, key)
+        return buffer, label, text
 
 
     def load_frames(self, vid_dir, frame_count):

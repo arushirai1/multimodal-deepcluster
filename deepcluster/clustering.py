@@ -81,7 +81,8 @@ class ReassignedDataset(data.Dataset):
         if self.transform is not None:
             img = self.transform(img)
         '''
-        return self.dataset[original_index][0], pseudolabel
+        tmp = self.dataset[original_index]
+        return tmp[0], pseudolabel, tmp[1]
 
     def __len__(self):
         return len(self.imgs)
@@ -99,10 +100,11 @@ def preprocess_features(npdata, pca=256):
     npdata =  npdata.astype('float32')
 
     # Apply PCA-whitening with Faiss
-    mat = faiss.PCAMatrix (ndim, pca, eigen_power=-0.5)
-    mat.train(npdata)
-    assert mat.is_trained
-    npdata = mat.apply_py(npdata)
+    if pca < ndim:
+        mat = faiss.PCAMatrix (ndim, pca, eigen_power=-0.5)
+        mat.train(npdata)
+        assert mat.is_trained
+        npdata = mat.apply_py(npdata)
 
     # L2 normalization
     row_sums = np.linalg.norm(npdata, axis=1)
@@ -215,7 +217,7 @@ class Kmeans(object):
     def __init__(self, k):
         self.k = k
 
-    def cluster(self, data, verbose=False):
+    def cluster(self, data, pca_dims=256, verbose=False):
         """Performs k-means clustering.
             Args:
                 x_data (np.array N * dim): data to cluster
@@ -223,7 +225,7 @@ class Kmeans(object):
         end = time.time()
 
         # PCA-reducing, whitening and L2-normalization
-        xb = preprocess_features(data)
+        xb = preprocess_features(data, pca_dims)
 
         # cluster the data
         I, loss = run_kmeans(xb, self.k, verbose)
