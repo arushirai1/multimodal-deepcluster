@@ -97,8 +97,9 @@ def main(args):
         model = InceptionI3d(400, in_channels=3)
         model.load_state_dict(torch.load('./pytorch_i3d/models/rgb_imagenet.pt'))
         model.replace_logits(args.nmb_cluster)
+        model = torch.nn.DataParallel(model)  # WARNING to test
+
     #model.top_layer = None
-    model = torch.nn.DataParallel(model) #WARNING to test
     model.cuda()
     cudnn.benchmark = True
 
@@ -189,8 +190,8 @@ def main(args):
 
         # remove head
         if text_only:
-            model.module.top_layer = None
-            model.module.classifier = nn.Sequential(*list(model.module.classifier.children())[:-1])
+            model.top_layer = None
+            #model.classifier = nn.Sequential(*list(model.classifier.children())[:-1])
         else:
             model.module.logits = None
 
@@ -222,13 +223,12 @@ def main(args):
 
         # set last fully connected layer
         if text_only:
-            mlp = list(model.module.classifier.children())
-            mlp.append(nn.ReLU(inplace=True).cuda())
-            model.module.classifier = nn.Sequential(*mlp)
-            model.module.top_layer = nn.Linear(fd, len(deepcluster.images_lists))
-            model.module.top_layer.weight.data.normal_(0, 0.01)
-            model.module.top_layer.bias.data.zero_()
-            model.module.top_layer.cuda()
+            mlp = list(model.classifier.children())
+            model.classifier = nn.Sequential(*mlp)
+            model.top_layer = nn.Linear(fd, len(deepcluster.images_lists))
+            model.top_layer.weight.data.normal_(0, 0.01)
+            model.top_layer.bias.data.zero_()
+            model.top_layer.cuda()
         else:
             model.module.replace_logits(args.nmb_cluster)
             model.module.logits.conv3d.weight = nn.init.kaiming_normal_(model.module.logits.conv3d.weight, mode='fan_out')
@@ -318,14 +318,13 @@ def train(loader, model, crit, opt, epoch):
         target = target.cuda(non_blocking=True)
         if text_only:
             print("Text", text[0][:10])
-            input_var = ' '.join(text[0].split()[:512])#torch.autograd.Variable(text)#.cuda())  # , volatile=True)
+            input_var = text[0]#' '.join(text[0].split()[:512])#torch.autograd.Variable(text)#.cuda())  # , volatile=True)
         else:
             input_var = torch.autograd.Variable(input_tensor.cuda())  # , volatile=True)
 
         target_var = torch.autograd.Variable(target)
 
         output = model(input_var)
-        print(output.shape)
         loss = crit(output, target_var)
 
         # record loss
@@ -365,7 +364,8 @@ def compute_features(dataloader, model, N):
 
         if text_only:
             #text = torch.autograd.Variable(text)#.cuda())  # , volatile=True)
-            aux = model.module.extract_features(text[0].split()[:512]).data.cpu().numpy()
+            #print(text[0].split()[:512].size)
+            aux = model.extract_features(text[0]).data.cpu().numpy()
         else:
             input_var = torch.autograd.Variable(input_tensor.cuda())  # , volatile=True)
             aux = model.module.extract_features(input_var).data.cpu().numpy()

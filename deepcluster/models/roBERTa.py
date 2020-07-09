@@ -26,15 +26,13 @@ class RobertaCaptions(nn.Module):
 
     def forward(self, x):
         x = self.extract_features(x)
-        print(x.shape)
         x=self.classifier(x)
-        print(x.shape)
         x = self.top_layer(x)
-        print(x.shape)
         return x #self.pool(x.permute(0, 2, 1))  # .cuda()).detach().cpu()
 
     def extract_features(self, x):
         tokens = self.roberta.encode(x)
+        tokens=tokens[:512]
         x = self.roberta.extract_features(tokens)
         pool= nn.AdaptiveAvgPool2d((1,1024)) #nn.MaxPool2d((x.shape[1], 1))
         x=pool(x).squeeze(1)
