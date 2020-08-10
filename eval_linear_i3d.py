@@ -19,6 +19,11 @@ import torchvision.transforms as transforms
 import torchvision.datasets as datasets
 
 from deepcluster.util import AverageMeter, learning_rate_decay, load_model, Logger
+from multiprocessing import set_start_method
+try:
+    set_start_method('spawn')
+except RuntimeError:
+    pass
 
 parser = argparse.ArgumentParser(description="""Train linear classifier on top
                                  of frozen convolutional layers of an AlexNet.""")
@@ -29,45 +34,52 @@ parser.add_argument('--conv', type=int,
 parser.add_argument('--tencrops', action='store_true',
                     help='validation accuracy averaged over 10 crops')
 parser.add_argument('--exp', type=str, default='', help='exp folder')
-parser.add_argument('--workers', default=4, type=int,
+parser.add_argument('--workers', default=8, type=int,
                     help='number of data loading workers (default: 4)')
-parser.add_argument('--epochs', type=int, default=90, help='number of total epochs to run (default: 90)')
-parser.add_argument('--batch_size', default=40, type=int,
+parser.add_argument('--epochs', type=int, default=100, help='number of total epochs to run (default: 90)')
+parser.add_argument('--batch_size', default=12, type=int,
                     help='mini-batch size (default: 256)')
 parser.add_argument('--lr', default=0.01, type=float, help='learning rate')
 parser.add_argument('--momentum', default=0.9, type=float, help='momentum (default: 0.9)')
 parser.add_argument('--weight_decay', '--wd', default=-4, type=float,
                     help='weight decay pow (default: -4)')
 parser.add_argument('--seed', type=int, default=31, help='random seed')
-parser.add_argument('--resume', type=bool, default=False, help='resume?')
-
+parser.add_argument('--resume', type=str, default='', help='path?')
+parser.add_argument('--modal', type=str, choices=['text_only', 'joint', 'video_only'],
+                    default='text_only', help='modality to train on (default: text_only)')
+parser.add_argument('--cliplen', type=int, default=16,
+                    help='clip len (default: 16)')
 parser.add_argument('--verbose', action='store_true', help='chatty')
+parser.add_argument('--nofreeze', action='store_true', help='test unfreezed')
 
 from COIN_Dataset import COIN
 from Utils import build_paths
 
+def _load_model(path, model, args, opt):
+    if os.path.isfile(path):
+        print("=> loading checkpoint '{}'".format(path))
+        checkpoint = torch.load(path)
+        args.start_epoch = checkpoint['epoch']
+        state_dict = checkpoint['state_dict'].copy()
+        to_delete = []
+        # remove top_layer parameters from checkpoint
+        for key in state_dict:
+            if 'top_layer' in key:
+                to_delete.append(key)
+        for key in to_delete:
+            del state_dict[key]
+        model.load_state_dict(state_dict)
+        opt.load_state_dict(checkpoint['optimizer'])
+        print("=> loaded checkpoint '{}' (epoch {})"
+              .format(path, checkpoint['epoch']))
+    else:
+        print("=> no checkpoint found at '{}'".format(path))
+    return model, opt
 
 def main():
     global args
     args = parser.parse_args()
     root, dictionary_pickle, metadata_path = build_paths()
-    endpoints = ['Conv3d_1a_7x7',
-                 'MaxPool3d_2a_3x3',
-                 'Conv3d_2b_1x1',
-                 'Conv3d_2c_3x3',
-                 'MaxPool3d_3a_3x3',
-                 'Mixed_3b',
-                 'Mixed_3c',
-                 'MaxPool3d_4a_3x3',
-                 'Mixed_4b',
-                 'Mixed_4c',
-                 'Mixed_4d',
-                 'Mixed_4e',
-                 'Mixed_4f',
-                 'MaxPool3d_5a_2x2',
-                 'Mixed_5b',
-                 'Mixed_5c']
-    # endpoints = ['Conv3d_1a_7x7', 'MaxPool3d_2a_3x3', 'Conv3d_2b_1x1', 'Conv3d_2c_3x3', 'MaxPool3d_3a_3x3', 'Mixed_3b', 'Mixed_3c', 'MaxPool3d_4a_3x3' (7), 'Mixed_4b'(8), 'Mixed_4c'(9), 'Mixed_4d' (10), 'Mixed_4e' (11), 'Mixed_4f' (12), 'MaxPool3d_5a_2x2'(13), 'Mixed_5b' (14), 'Mixed_5c' (15)]
 
     # fix random seeds
     torch.manual_seed(args.seed)
@@ -77,23 +89,33 @@ def main():
     best_prec1 = 0
 
     # load model
-    model = load_model(args.model)
+    model = load_model(args.model, args.modal)
     model.cuda()
     cudnn.benchmark = True
 
     # freeze the features layers
-    for end_point in model.end_points:
-        print("Frozen: ", end_point)
-        model._modules[end_point].requires_grad = False
+    if args.modal == 'video_only':
+        for end_point in model.end_points:
+            print("Frozen: ", end_point)
+            model._modules[end_point].requires_grad = False
+
+    elif args.modal == 'joint':
+        model.i3d.requires_grad = False
+        model.roberta.requires_grad = False
+    else:
+        model.features.requires_grad = False
+        model.classifier.requires_grad = False
+
     model.cuda()
+    cudnn.benchmark = True
 
     # define loss function (criterion) and optimizer
     criterion = nn.CrossEntropyLoss().cuda()
 
-    train_dataset = COIN(root, dictionary_pickle, metadata_path, train=True, do_crop=False)
+    train_dataset = COIN(root, dictionary_pickle, metadata_path, method=args.modal, clip_len=args.cliplen, train=True, do_crop=True)
 
 
-    val_dataset = COIN(root, dictionary_pickle, metadata_path, train=False, do_crop=False)
+    val_dataset = COIN(root, dictionary_pickle, metadata_path, method=args.modal, clip_len=args.cliplen, train=False, do_crop=True)
 
 
 
@@ -116,13 +138,22 @@ def main():
         momentum=args.momentum,
         weight_decay=10 ** args.weight_decay
     )
-    if not args.resume:
-        print("test")
+
+    if args.modal == 'video_only':
         model.replace_logits(num_classes)
         model.logits.conv3d.weight = nn.init.kaiming_normal_(model.logits.conv3d.weight, mode='fan_out')
         if model.logits.conv3d.bias is not None: model.logits.conv3d.bias.data.zero_()
+        if args.resume:
+            model, optimizer = _load_model(args.resume, model, args, optimizer)
 
-        model.cuda()
+    elif args.modal == 'text_only':
+        model.top_layer = nn.Linear(512, num_classes)
+        model.top_layer.weight.data.normal_(0, 0.01)
+        model.top_layer.bias.data.zero_()
+    else:
+        model.top_layer = nn.Linear(1024, num_classes)
+        model.initialize_weights()
+    model.cuda()
 
     # create logs
     exp_log = os.path.join(args.exp, 'log')
@@ -140,7 +171,7 @@ def main():
 
         # evaluate on validation set
         prec1, prec5, loss = validate(val_loader, model, criterion)
-
+        print("Validation %d: " %epoch, prec1, prec5, loss)
         loss_log.log(loss)
         prec1_log.log(prec1)
         prec5_log.log(prec5)
@@ -235,7 +266,7 @@ def train(train_loader, model, criterion, optimizer, epoch):
     model.eval()
     #model.features.requires_grad = False
     end = time.time()
-    for i, (input, target) in enumerate(train_loader):
+    for i, (input, target, text) in enumerate(train_loader):
 
         # measure data loading time
         data_time.update(time.time() - end)
@@ -244,13 +275,24 @@ def train(train_loader, model, criterion, optimizer, epoch):
         learning_rate_decay(optimizer, len(train_loader) * epoch + i, args.lr)
 
         target = target.cuda(non_blocking=True)
-        input_var = torch.autograd.Variable(input.cuda())
+        if args.modal == 'text_only':
+            text_var = torch.autograd.Variable(text.cuda())
+        elif args.modal == 'video_only':
+            input_var = torch.autograd.Variable(input.cuda())
+        else:
+            text_var = torch.autograd.Variable(text.cuda())
+            input_var = torch.autograd.Variable(input.cuda())
+
         target_var = torch.autograd.Variable(target)
         # compute output
 
         # output = forward(input_var, model, reglog.conv)
-
-        output = model(input_var)  # reglog(output)
+        if args.modal == 'text_only':
+            output = model(text_var)  # reglog(output)
+        elif args.modal == 'video_only':
+            output = model(input_var)
+        else:
+            output = model(input_var, text_var)
         loss = criterion(output, target_var)
         # measure accuracy and record loss
         prec1, prec5 = accuracy(output.data, target, topk=(1, 5))
@@ -267,7 +309,7 @@ def train(train_loader, model, criterion, optimizer, epoch):
         batch_time.update(time.time() - end)
         end = time.time()
 
-        if args.verbose and i % 100 == 0:
+        if args.verbose and i % 25 == 0:
             print('Epoch: [{0}][{1}/{2}]\t'
                   'Time {batch_time.val:.3f} ({batch_time.avg:.3f})\t'
                   'Data {data_time.val:.3f} ({data_time.avg:.3f})\t'
@@ -276,6 +318,7 @@ def train(train_loader, model, criterion, optimizer, epoch):
                   'Prec@5 {top5.val:.3f} ({top5.avg:.3f})'
                   .format(epoch, i, len(train_loader), batch_time=batch_time,
                           data_time=data_time, loss=losses, top1=top1, top5=top5))
+    print("Train %d: " % epoch, top1.avg, top5.avg, losses.avg)
 
 
 def validate(val_loader, model, criterion):
@@ -288,14 +331,24 @@ def validate(val_loader, model, criterion):
     model.eval()
     softmax = nn.Softmax(dim=1).cuda()
     end = time.time()
-    for i, (input_tensor, target) in enumerate(val_loader):
+    for i, (input_tensor, target, text) in enumerate(val_loader):
         target = target.cuda(non_blocking=True)
         with torch.no_grad():
-            input_var = torch.autograd.Variable(input_tensor.cuda())
-
+            if args.modal == 'text_only':
+                text_var = torch.autograd.Variable(text.cuda())
+            elif args.modal =='video_only':
+                input_var = torch.autograd.Variable(input_tensor.cuda())
+            else:
+                text_var = torch.autograd.Variable(text.cuda())
+                input_var = torch.autograd.Variable(input_tensor.cuda())
             target_var = torch.autograd.Variable(target)
 
-        output = model(input_var)  # reglog(forward(input_var, model, reglog.conv))
+        if args.modal == 'text_only':
+            output = model(text_var)  # reglog(output)
+        elif args.modal =='video_only':
+            output = model(input_var)
+        else:
+            output = model(input_var, text_var)
 
         output_central = output
 
@@ -309,7 +362,7 @@ def validate(val_loader, model, criterion):
         batch_time.update(time.time() - end)
         end = time.time()
 
-        if args.verbose and i % 100 == 0:
+        if args.verbose and i % 10 == 0:
             print('Validation: [{0}/{1}]\t'
                   'Time {batch_time.val:.3f} ({batch_time.avg:.3f})\t'
                   'Loss {loss.val:.4f} ({loss.avg:.4f})\t'

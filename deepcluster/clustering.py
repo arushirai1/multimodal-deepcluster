@@ -15,7 +15,7 @@ import torch
 import torch.utils.data as data
 import torchvision.transforms as transforms
 from sklearn.metrics.cluster import homogeneity_score
-
+import random
 ImageFile.LOAD_TRUNCATED_IMAGES = True
 
 __all__ = ['PIC', 'Kmeans', 'cluster_assign', 'arrange_clustering']
@@ -44,28 +44,49 @@ class ReassignedDataset(data.Dataset):
                                         transformed version
     """
 
-    def __init__(self, image_indexes, pseudolabels, dataset, transform=None):
+    def __init__(self, image_indexes, pseudolabels, dataset, transform=None, text_label_index=None, contrastive=False):
         self.dataset = dataset
-        self.imgs = self.make_dataset(image_indexes, pseudolabels, dataset)
+        self.xdc = text_label_index is not None
+        self.contrastive = contrastive
+        self.imgs = self.make_dataset(image_indexes, pseudolabels, dataset, text_label_index)
         self.transform = transform
 
-    def make_dataset(self, image_indexes, pseudolabels, dataset):
+    def make_dataset(self, image_indexes, pseudolabels, dataset, text_label_index=None):
         print("Making dataset")
         end = time.time()
 
         label_to_idx = {label: idx for idx, label in enumerate(set(pseudolabels))}
         images = []
         true_labels=[]
+        text_labels=[]
+        negatives_list=[] # {'positive index j': 'random negative index from dataset'}
         for j, idx in enumerate(image_indexes):
             #path = dataset[idx][0]
             original_index= idx
             original_label = dataset.data_list[idx][1]
             true_labels.append(original_label)
             pseudolabel = label_to_idx[pseudolabels[j]]
-            images.append((original_index, original_label, pseudolabel))
+
+            if text_label_index:
+                text_pseudolabel=text_label_index[original_index]
+                text_labels.append(text_pseudolabel)
+                if self.contrastive:
+                    random_neg_index = random.randint(0, len(image_indexes)-1)
+                    while text_label_index[random_neg_index] == text_pseudolabel:
+                        # make sure random_neg_index is not the same as the anchor's original dataset index or pseudolabel
+                        random_neg_index = random.randint(0, len(image_indexes))
+                    negatives_list.append(random_neg_index)
+                    images.append((original_index, original_label, pseudolabel, text_pseudolabel, random_neg_index))
+                else:
+                    images.append((original_index, original_label, pseudolabel, text_pseudolabel))
+
+            else:
+                images.append((original_index, original_label, pseudolabel))
 
         print("Making dataset took: ", time.time()-end)
         print("Homogeneity Score: ", homogeneity_score(np.array(true_labels), np.array(pseudolabels)))
+        if text_label_index:
+            print("Text Homogeneity Score: ", homogeneity_score(np.array(true_labels), np.array(text_labels)))
         return images
 
     def __getitem__(self, index):
@@ -75,14 +96,23 @@ class ReassignedDataset(data.Dataset):
         Returns:
             tuple: (image, pseudolabel) where pseudolabel is the cluster of index datapoint
         """
-        original_index, original_label, pseudolabel = self.imgs[index]
-        '''
-        img = transforms.ToPILImage()(img).convert("RGB") #pil_loader(path)
-        if self.transform is not None:
-            img = self.transform(img)
-        '''
+        if self.xdc:
+            if self.contrastive:
+                original_index, original_label, pseudolabel, text_pseudolabel, negative_index = self.imgs[index]
+                negative_text_sample=self.dataset.grab_text_only(negative_index)
+            else:
+                original_index, original_label, pseudolabel, text_pseudolabel = self.imgs[index]
+        else:
+            original_index, original_label, pseudolabel = self.imgs[index]
         tmp = self.dataset[original_index]
-        return tmp[0], pseudolabel, tmp[2]
+
+        if self.xdc:
+            if self.contrastive:
+                return tmp[0], pseudolabel, tmp[2], text_pseudolabel, negative_text_sample
+            else:
+                return tmp[0], pseudolabel, tmp[2], text_pseudolabel
+        else:
+            return tmp[0], pseudolabel, tmp[2]
 
     def __len__(self):
         return len(self.imgs)
@@ -136,7 +166,7 @@ def make_graph(xb, nnn):
     return I, D
 
 
-def cluster_assign(images_lists, dataset):
+def cluster_assign(images_lists, dataset, text_lists=None, contrastive=False):
     """Creates a dataset from clustering, with clusters as labels.
     Args:
         images_lists (list of list): for each cluster, the list of image indexes
@@ -152,6 +182,12 @@ def cluster_assign(images_lists, dataset):
     for cluster, images in enumerate(images_lists):
         image_indexes.extend(images)
         pseudolabels.extend([cluster] * len(images))
+    text_label_index=None
+    if text_lists:
+        text_label_index={}
+        for cluster, text_indexes in enumerate(text_lists):
+            for index in text_indexes:
+                text_label_index[index]=cluster
 
     normalize = transforms.Normalize(mean=[0.485, 0.456, 0.406],
                                      std=[0.229, 0.224, 0.225])
@@ -160,7 +196,7 @@ def cluster_assign(images_lists, dataset):
                             transforms.ToTensor(),
                             normalize])
 
-    return ReassignedDataset(image_indexes, pseudolabels, dataset, t)
+    return ReassignedDataset(image_indexes, pseudolabels, dataset, t, text_label_index, contrastive)
 
 
 def run_kmeans(x, nmb_clusters, verbose=False):
@@ -199,7 +235,6 @@ def run_kmeans(x, nmb_clusters, verbose=False):
     ])
     if verbose:
         print('k-means loss evolution: {0}'.format(losses))
-
     return [int(n[0]) for n in I], losses[-1]
 
 

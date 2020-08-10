@@ -12,7 +12,7 @@ import torch
 from torch.utils.data.sampler import Sampler
 import pdb
 import deepcluster.models as models
-def load_model(path):
+def load_model(path, type):
     """Loads model and return it without DataParallel table."""
     if os.path.isfile(path):
         print("=> loading checkpoint '{}'".format(path))
@@ -26,13 +26,23 @@ def load_model(path):
         checkpoint['state_dict'] = {rename_key(key): val
                                     for key, val
                                     in checkpoint['state_dict'].items()}
-        print(checkpoint['prec5'])
         # size of the top layer
-        N = checkpoint['state_dict']['logits.conv3d.bias'].size()
-        # build skeleton of the model
-        sob = 'sobel.0.weight' in checkpoint['state_dict'].keys()
-        model = models.__dict__['i3d'](sobel=sob, out=int(N[0]))
-
+        if type == 'video_only':
+            N = checkpoint['state_dict']['logits.conv3d.bias'].size()
+            # build skeleton of the model
+            sob = 'sobel.0.weight' in checkpoint['state_dict'].keys()
+            model = models.__dict__['i3d'](sobel=sob, out=int(N[0]))
+        elif type == 'text_only':
+            N = checkpoint['state_dict']['top_layer.bias'].size()
+            # build skeleton of the model
+            sob = 'sobel.0.weight' in checkpoint['state_dict'].keys()
+            model = models.__dict__['roberta_model'](sobel=sob, out=int(N[0]))
+        else:
+            #joint
+            N = checkpoint['state_dict']['top_layer.bias'].size()
+            # build skeleton of the model
+            sob = 'sobel.0.weight' in checkpoint['state_dict'].keys()
+            model = models.__dict__['joint'](sobel=sob, out=int(N[0]), pathto='./pytorch_i3d/models/rgb_imagenet.pt')
 
 
         # load weights

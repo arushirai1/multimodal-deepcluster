@@ -4,7 +4,10 @@ import cv2
 import errno
 import pandas as pd
 import pickle
-def build_paths(print_paths=True):
+
+
+def build_paths(print_paths=False):
+    cv2.setNumThreads(0)
     root= '/home/mschiappa/data/COIN/'
     dictionary_pickle='coin_howto_overlap_captions.pickle'
     metadata_path = 'coin_howto_overlap_metadata.csv'
@@ -61,16 +64,34 @@ def get_keys(path_to, dictionary_path, metadata_path):
             mid = 'val'
             test_list.append((os.path.join(path_to,'val', key), class_target))
 
-    print(clip_list)
     print("Train Length", len(clip_list))
     print("Test Length", len(test_list))
 
     return clip_list, test_list, classes
 
+def get_word_vec(data, freq_words):
+    vector=[]
+    data=data.split()
+    for word in freq_words:
+        if word in data:
+            vector.append(1)
+        else:
+            vector.append(0)
+    return np.asarray(vector)
+
 def get_text_description(dictionary_path, key):
-    with open(dictionary_path, 'rb') as f:
-        captions_df = pickle.load(f)
-        return ' '.join(list(captions_df[key]['text']))
+    with open('./freq_words.pickle', 'rb') as f:
+        freq_words=pickle.load(f)
+        with open(dictionary_path, 'rb') as f2:
+            captions_dict=pickle.load(f2)
+            data=' '.join(captions_dict[key]['text'])
+            embedding=get_word_vec(data, freq_words)
+    '''
+    with open('./embeddings/%s.pickle' %key, 'rb') as f:
+        embedding = pickle.load(f).data.cpu().numpy()
+        #print("embedding")
+    '''
+    return embedding
 
 import random
 def rand(count, start, end, spacing):
@@ -117,8 +138,7 @@ def create_frames(video_file, desired_frames=64, skip_rate=2, continuous_frames=
         return None
     cap = cv2.VideoCapture(video_file)
     length = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-    idx=uniform_sample_frames(length, n_frames_per_segment=8, n_frames_per_video=64*8)
-
+    idx=uniform_sample_frames(length-8, n_frames_per_segment=8, n_frames_per_video=desired_frames)
     frames = []
     for i in idx:
         cap.set(cv2.CAP_PROP_POS_FRAMES, i)
@@ -131,9 +151,10 @@ def create_frames(video_file, desired_frames=64, skip_rate=2, continuous_frames=
             frame[high_mask]=255
             frames.append(frame)
         else:
-            if len(frames) is not 0:
-                print("video file err", video_file)
+            if len(frames) != 0:
+                print("video file err", video_file, i)
                 frames.append(frames[-1])
+
     '''
     while len(frames) != desired_frames:
         frames.append(frames[-1])

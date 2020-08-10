@@ -8,6 +8,7 @@ import argparse
 import os
 import pickle
 import time
+import pdb
 
 import faiss
 import numpy as np
@@ -27,12 +28,20 @@ from deepcluster.util import AverageMeter, Logger, UnifLabelSampler
 from COIN_Dataset import COIN
 from Utils import build_paths
 from deepcluster.models.pytorch_i3d import InceptionI3d
+import psutil
+from gpuinfo import GPUInfo
+
+from multiprocessing import set_start_method
+try:
+    set_start_method('spawn')
+except RuntimeError:
+    pass
 
 def parse_args():
     parser = argparse.ArgumentParser(description='PyTorch Implementation of DeepCluster')
 
     parser.add_argument('--arch', '-a', type=str,
-                        choices=['alexnet', 'vgg16', 'c3d', 'roberta_model'], default='roberta_model',
+                        choices=['alexnet', 'vgg16', 'c3d', 'joint', 'roberta_model'], default='roberta_model',
                         help='Text architecture (default: roberta_model)')
     parser.add_argument('--sobel', action='store_true', help='Sobel filtering')
     parser.add_argument('--clustering', type=str, choices=['Kmeans', 'PIC'],
@@ -41,6 +50,8 @@ def parse_args():
                         default='text_only', help='modality to train on (default: text_only)')
     parser.add_argument('--nmb_cluster', '--k', type=int, default=10000,
                         help='number of cluster for k-means (default: 10000)')
+    parser.add_argument('--cliplen', type=int, default=16,
+                        help='clip len (default: 16)')
     parser.add_argument('--lr', default=0.05, type=float,
                         help='learning rate (default: 0.05)')
     parser.add_argument('--wd', default=-5, type=float,
@@ -93,11 +104,15 @@ def main(args):
     if text_only:
         model = models.__dict__[args.arch](sobel=args.sobel, out=args.nmb_cluster)
         fd = int(model.top_layer.weight.size()[1])
+    elif is_joint:
+        model=models.__dict__[args.arch](sobel=args.sobel, out=args.nmb_cluster, pathto='./pytorch_i3d/models/rgb_imagenet.pt')
+        model = torch.nn.DataParallel(model)
+
     else:
         model = InceptionI3d(400, in_channels=3)
         model.load_state_dict(torch.load('./pytorch_i3d/models/rgb_imagenet.pt'))
         model.replace_logits(args.nmb_cluster)
-        model = torch.nn.DataParallel(model)  # WARNING to test
+        model = torch.nn.DataParallel(model)
 
     #model.top_layer = None
     model.cuda()
@@ -164,9 +179,9 @@ def main(args):
 
     print('\n==> Preparing Data...\n')
 
-    dataset = COIN(root, dictionary_pickle, metadata_path, train=True, method=args.modal, do_crop=False)
+    dataset = COIN(root, dictionary_pickle, metadata_path, train=True, method=args.modal, clip_len=args.cliplen, do_crop=True)
 
-    dataloader = torch.utils.data.DataLoader(dataset, batch_size=args.batch, shuffle=False, num_workers=args.workers)
+    dataloader = torch.utils.data.DataLoader(dataset, batch_size=args.batch, pin_memory=False,  shuffle=False, num_workers=args.workers, timeout=500, drop_last=True)
     '''
     trainset = UCF10(class_idxs=class_idxs, split=train_split, frames_root=frames_root,
                      clip_len=clip_len, train=True)
@@ -189,15 +204,14 @@ def main(args):
         end = time.time()
 
         # remove head
-        if text_only:
+        if text_only or is_joint:
             model.top_layer = None
-            #model.classifier = nn.Sequential(*list(model.classifier.children())[:-1])
+            model.classifier = nn.Sequential(*list(model.classifier.children())[:-2])
         else:
             model.module.logits = None
 
         # get the features for the whole dataset
-        features = compute_features(dataloader, model, len(dataset))
-
+        features = compute_features(dataloader, model, len(dataloader)*args.batch)
         # cluster the features
         if args.verbose:
             print('Cluster the features')
@@ -208,7 +222,6 @@ def main(args):
             print('Assign pseudo labels')
         train_dataset = clustering.cluster_assign(deepcluster.images_lists,
                                                   dataset)
-        print(train_dataset)
         # uniformly sample per target
         sampler = UnifLabelSampler(int(args.reassign * len(train_dataset)),
                                    deepcluster.images_lists)
@@ -224,11 +237,17 @@ def main(args):
         # set last fully connected layer
         if text_only:
             mlp = list(model.classifier.children())
+            mlp.append(nn.ReLU(inplace=True).cuda())
+            mlp.append(nn.Dropout(0.5).cuda())
             model.classifier = nn.Sequential(*mlp)
             model.top_layer = nn.Linear(fd, len(deepcluster.images_lists))
             model.top_layer.weight.data.normal_(0, 0.01)
             model.top_layer.bias.data.zero_()
             model.top_layer.cuda()
+        elif is_joint:
+            model.module.top_layer = nn.Linear(1024, len(deepcluster.images_lists))
+            model.module.initialize_weights()
+            model.module.top_layer.cuda()
         else:
             model.module.replace_logits(args.nmb_cluster)
             model.module.logits.conv3d.weight = nn.init.kaiming_normal_(model.module.logits.conv3d.weight, mode='fan_out')
@@ -317,14 +336,19 @@ def train(loader, model, crit, opt, epoch):
 
         target = target.cuda(non_blocking=True)
         if text_only:
-            print("Text", text[0][:10])
-            input_var = text[0]#' '.join(text[0].split()[:512])#torch.autograd.Variable(text)#.cuda())  # , volatile=True)
+            input_var = text.cuda()#' '.join(text[0].split()[:512])#torch.autograd.Variable(text)#.cuda())  # , volatile=True)
+        elif is_joint:
+            text=text.cuda()
+            input_var = torch.autograd.Variable(input_tensor.cuda())  # , volatile=True)
         else:
             input_var = torch.autograd.Variable(input_tensor.cuda())  # , volatile=True)
 
         target_var = torch.autograd.Variable(target)
 
-        output = model(input_var)
+        if is_joint:
+            output = model(input_var , text)
+        else:
+            output = model(input_var)
         loss = crit(output, target_var)
 
         # record loss
@@ -357,43 +381,71 @@ def compute_features(dataloader, model, N):
     batch_time = AverageMeter()
     end = time.time()
     model.eval()
+    print("Before", GPUInfo.gpu_usage())
+
     # discard the label information in the dataloader
-    for i, (input_tensor, _, text) in enumerate(dataloader):
-        torch.no_grad()
-        #print(i, text)
+    try:
+        for i, (input_tensor, _, text) in enumerate(dataloader):
+            torch.no_grad()
 
-        if text_only:
-            #text = torch.autograd.Variable(text)#.cuda())  # , volatile=True)
-            #print(text[0].split()[:512].size)
-            aux = model.extract_features(text[0]).data.cpu().numpy()
-        else:
-            input_var = torch.autograd.Variable(input_tensor.cuda())  # , volatile=True)
-            aux = model.module.extract_features(input_var).data.cpu().numpy()
-        if i == 0:
-            features = np.zeros((N, aux.shape[1]), dtype='float32')
-        
-        aux = aux.astype('float32')
-        if i < len(dataloader) - 1:
-            features[i * args.batch: (i + 1) * args.batch] = aux
-        else:
-            # special treatment for final batch
-            features[i * args.batch:] = aux
+            try:
+                if text_only:
+                    #text = torch.autograd.Variable(text)#.cuda())  # , volatile=True)
+                    #print(text[0].split()[:512].size)
 
-        # measure elapsed time
-        batch_time.update(time.time() - end)
-        end = time.time()
+                    aux = model.extract_features(text.cuda()).data.cpu().numpy()
+                    aux = aux.astype('float32')
 
-        if args.verbose and (i % 200) == 0:
-            print('{0} / {1}\t' 
-                  'Time: {batch_time.val:.3f} ({batch_time.avg:.3f})'
-                  .format(i, len(dataloader), batch_time=batch_time))
-    return features
+                elif is_joint:
+                    input_var = torch.autograd.Variable(input_tensor.cuda())  # , volatile=True)
+                    text=text.cuda()
+                    aux=model.module.extract_features(input_var, text).data.cpu().numpy()
+                    aux = aux.astype('float32')
+
+                else:
+                    input_var = torch.autograd.Variable(input_tensor.cuda())  # , volatile=True)
+                    aux = model.module.extract_features(input_var).data.cpu().numpy()
+                    aux = aux.astype('float32')
+                if i == 0:
+                    features = np.zeros((N, aux.shape[1]), dtype='float32')
+
+                if i < len(dataloader):
+                    features[i * args.batch: (i + 1) * args.batch] = aux
+                else:
+                    # special treatment for final batch
+                    features[i * args.batch:] = aux
+
+                # measure elapsed time
+                batch_time.update(time.time() - end)
+                end = time.time()
+
+                if args.verbose and (i % 50) == 0:
+                    print('{0} / {1}\t' 
+                          'Time: {batch_time.val:.3f} ({batch_time.avg:.3f})'
+                          .format(i, len(dataloader), batch_time=batch_time))
+            except Exception as e:
+                print("RAM Usage: ", str(psutil.virtual_memory().percent))
+                print(GPUInfo.gpu_usage())
+
+                print("failed: ", e)
+    except RuntimeError:
+        print("RAM Usage: ", str(psutil.virtual_memory().percent))
+        print(GPUInfo.gpu_usage())
+
+        return features
+    except Exception as e:
+        print("Error {}".format(e))
+    finally:
+        return features
 
 
 if __name__ == '__main__':
     args = parse_args()
     global text_only
     text_only = args.modal in 'text_only'
-    print(text_only)
+    global is_joint
+    is_joint = args.modal in 'joint'
+    print("Is text only? ", text_only)
+    print("Clip len: ", args.cliplen)
 
     main(args)

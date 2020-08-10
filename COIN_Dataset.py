@@ -49,7 +49,6 @@ class COIN(Dataset):
 
         for label, class_name_key in enumerate(classes):
             class_dict[class_name_key] = int(label)
-        print(class_dict)
         return class_dict
 
     def build_data_list(self):
@@ -70,16 +69,33 @@ class COIN(Dataset):
     def __getitem__(self, index):
         vid_dir, label, frame_count, class_name = self.data_list[index]
         buffer = 0 #np.empty((self.clip_len, self.resize_height, self.resize_width, 3), np.dtype('float32'))
-        if 'text_only' is not self.method:
-            buffer = self.load_frames(vid_dir, frame_count)
-            if self.do_crop:
-                buffer = self.spatial_crop(buffer, self.crop_size)
-            buffer = self.normalize(buffer)
-            buffer = self.to_tensor(buffer)
-        key=(vid_dir.split('/')[-1]).split('.')[0]
-        text = get_text_description(self.dictionary_pickle, key)
+        text = 0
+        try:
+            if 'text_only' != self.method:
+                buffer = self.load_frames(vid_dir, frame_count)
+                if self.do_crop:
+                    buffer = self.spatial_crop(buffer, self.crop_size)
+                buffer = self.normalize(buffer)
+                buffer = self.to_tensor(buffer)
+            if 'joint' == self.method or 'text_only' == self.method:
+                key=(vid_dir.split('/')[-1]).split('.')[0]
+                text = get_text_description(self.dictionary_pickle, key)
+                text=text.astype('float32')
+                #text=text
+        except Exception as e:
+            print("Error ", e)
+            from gpuinfo import GPUInfo
+            print(GPUInfo.gpu_usage())
+            #sys.exit()
+
         return buffer, label, text
 
+    def grab_text_only(self, index):
+        vid_dir, label, frame_count, class_name = self.data_list[index]
+        key = (vid_dir.split('/')[-1]).split('.')[0]
+        text = get_text_description(self.dictionary_pickle, key)
+        text = text.astype('float32')
+        return text
 
     def load_frames(self, vid_dir, frame_count):
         buffer = np.empty((self.clip_len, self.resize_height, self.resize_width, 3), np.dtype('float32'))
@@ -88,12 +104,8 @@ class COIN(Dataset):
             try:
                 frame = cv2.resize(frame, (self.resize_width, self.resize_height))
             except:
-                print('The image %s is potentially corrupt!\nDo you wish to proceed? [y/n]\n' % vid_dir)
-                response, _, _ = select.select([sys.stdin], [], [], 15)
-                if response == 'n':
-                    sys.exit()
-                else:
-                    frame = np.zeros((buffer.shape[1:]))
+                print("mem corrupt: ", vid_dir)
+                frame = np.zeros((buffer.shape[1:]))
 
             frame = np.array(frame).astype(np.float32)
             buffer[i] = frame
@@ -129,11 +141,10 @@ class COIN(Dataset):
         return torch.from_numpy(buffer)
 
 if __name__ == '__main__':
-
-    batch_size = 40
+    batch_size = 12
     root, dictionary_pickle, metadata_path = build_paths()
-    trainset = COIN(root, dictionary_pickle, metadata_path, train=True)
-    trainloader = DataLoader(trainset, batch_size=batch_size, shuffle=True)
-    for i, (batch, labels) in enumerate(trainloader):
-        labels = np.array(labels)
-        print(batch.shape)
+    trainset = COIN(root, dictionary_pickle, metadata_path, train=True, method='text_only')
+    trainloader = DataLoader(trainset, batch_size=batch_size, shuffle=True, num_workers=16)
+    for i, (batch, label, text) in enumerate(trainloader):
+        label = np.array(label)
+        print(text.shape)

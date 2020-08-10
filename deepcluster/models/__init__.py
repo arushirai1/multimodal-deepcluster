@@ -9,3 +9,4 @@ from .alexnet import *
 from .c3d import *
 from .pytorch_i3d import *
 from .roBERTa import *
+from .joint import *

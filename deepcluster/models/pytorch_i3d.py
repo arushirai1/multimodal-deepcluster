@@ -293,7 +293,7 @@ class InceptionI3d(nn.Module):
         if self._final_endpoint == end_point: return
 
         end_point = 'Logits'
-        self.avg_pool = nn.AvgPool3d(kernel_size=[2, 7, 7],
+        self.avg_pool = nn.AvgPool3d(kernel_size=[2, 4, 4],
                                      stride=(1, 1, 1))
         self.dropout = nn.Dropout(dropout_keep_prob)
         self.logits = Unit3D(in_channels=384+384+128+128, output_channels=self._num_classes,
@@ -306,13 +306,16 @@ class InceptionI3d(nn.Module):
         self.build()
 
 
-    def replace_logits(self, num_classes):
+    def replace_logits(self, num_classes, activation=None):
         self._num_classes = num_classes
+        batch_norm = False
+        if activation:
+            batch_norm=True
         self.logits = Unit3D(in_channels=384+384+128+128, output_channels=self._num_classes,
                              kernel_shape=[1, 1, 1],
                              padding=0,
-                             activation_fn=None,
-                             use_batch_norm=False,
+                             activation_fn=activation,
+                             use_batch_norm=batch_norm,
                              use_bias=True,
                              name='logits')
         
@@ -326,14 +329,13 @@ class InceptionI3d(nn.Module):
         for end_point in self.VALID_ENDPOINTS:
             if end_point in self.end_points:
                 x = self._modules[end_point](x) # use _modules to work with dataparallel
+
         if self.logits:
             x = self.logits(self.dropout(self.avg_pool(x)))
             if self._spatial_squeeze:
-                x = x.squeeze(3).squeeze(3).squeeze(2)
-        else:
-            x = self.avg_pool(x)  # added
-            if self._spatial_squeeze:
-                x = x.squeeze(3).squeeze(3).squeeze(2)
+                x = x.squeeze(3).squeeze(3)
+            pool = nn.AdaptiveAvgPool2d((self._num_classes, 1))
+            x = pool(x).squeeze(2)
         # logits is batch X time X classes, which is what we want to work with
         return x
         
@@ -342,7 +344,13 @@ class InceptionI3d(nn.Module):
         for end_point in self.VALID_ENDPOINTS:
             if end_point in self.end_points:
                 x = self._modules[end_point](x)
-        return self.avg_pool(x)
+
+        x = self.avg_pool(x)  # added
+        if self._spatial_squeeze:
+            x = x.squeeze(3).squeeze(3)
+        pool = nn.AdaptiveAvgPool2d((1024, 1))
+        x = pool(x).squeeze(2)
+        return x
 
 def i3d(sobel=False, bn=True, out=1000):
     model = InceptionI3d(out)
